@@ -1,0 +1,11 @@
+{
+  "name": "sf-deploy-tools",
+  "version": "1.0.0",
+  "description": "Install a VS Code deploy-current-file task and macOS keyboard shortcut in Salesforce projects.",
+  "license": "MIT",
+  "bin": { "sf-deploy-tools": "bin/sf-deploy-tools.cjs" },
+  "files": ["bin/", "lib/", "templates/", "README.md", "LICENSE"],
+  "scripts": { "test": "node --test", "check": "node --check bin/sf-deploy-tools.cjs && node --check lib/install.cjs && node --check templates/deploy-current-file.cjs" },
+  "engines": { "node": ">=20" },
+  "dependencies": { "jsonc-parser": "3.3.1" }
+}
