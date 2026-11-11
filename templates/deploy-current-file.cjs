@@ -62,6 +62,57 @@ function runDeploy(root, source) {
     });
   });
 }
+
+// Salesforce uses both array and singleton forms for some result collections.
+const list = value => value == null ? [] : Array.isArray(value) ? value : [value];
+const oneLine = value => String(value || '').replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
+function deploymentErrors(data, fallbackFile) {
+  const deployment = data.result || {};
+  const details = deployment.details || {};
+  const lines = [];
+  const add = (filename, line, column, message) => {
+    const text = oneLine(message);
+    if (!text) return;
+    let location = oneLine(filename || fallbackFile || 'Salesforce CLI');
+    if (Number(line) > 0) {
+      location += `:${line}`;
+      if (Number(column) > 0) location += `:${column}`;
+    }
+    lines.push(`${location} — ${text}`);
+  };
+  const components = list(details.componentFailures).filter(item => item && item.problemType !== 'Warning');
+  if (components.length) {
+    for (const failure of components) {
+      add(failure.fileName || failure.fullName, failure.lineNumber, failure.columnNumber, failure.problem || failure.message);
+    }
+  } else {
+    // Some CLI failures expose source diagnostics only in result.files.
+    for (const failure of list(deployment.files)) {
+      if (failure && (failure.state === 'Failed' || failure.problemType === 'Error')) {
+        add(failure.filePath || failure.fileName || failure.fullName, failure.lineNumber,
+          failure.columnNumber, failure.error || failure.problem || failure.message);
+      }
+    }
+  }
+  for (const failure of list(details.runTestResult?.failures)) {
+    if (!failure) continue;
+    const stack = String(failure.stackTrace || '');
+    const frame = stack.match(/(?:Class|Trigger)\.([\w.]+): line (\d+), column (\d+)/);
+    const name = failure.name || failure.className || 'Apex test';
+    add(frame ? frame[1] : name, frame ? frame[2] : failure.lineNumber,
+      frame ? frame[3] : failure.columnNumber,
+      `${failure.methodName ? failure.methodName + ': ' : ''}${failure.message || 'Test failed.'}`);
+  }
+  for (const warning of list(details.runTestResult?.codeCoverageWarnings)) {
+    if (warning?.message) add(warning.name || 'Code coverage', null, null, warning.message);
+  }
+  if (!lines.length) {
+    add(data.name || 'Salesforce CLI', null, null,
+      data.message || deployment.errorMessage || deployment.message || 'Deployment failed; Salesforce returned no error details. Check Deployment Status.');
+  }
+  return [...new Set(lines)];
+}
+
 async function main() {
   const root = fs.realpathSync(process.cwd());
   if (!fs.existsSync(path.join(root, 'sfdx-project.json'))) throw new Error('Run this task from the Salesforce project root.');
@@ -79,8 +130,7 @@ async function main() {
   try { data = JSON.parse(result.stdout); }
   catch {
     if (result.stderr.trim()) console.error(result.stderr.trim());
-    if (result.stdout) console.log(result.stdout);
-    throw new Error(`No valid JSON deployment result (exit ${result.status}). Review the output above.`);
+    throw new Error(`No valid JSON deployment result (exit ${result.status}). Check Salesforce Deployment Status.`);
   }
   const deployment = data.result || {};
   const success = result.status === 0 && data.status === 0 && deployment.done === true && deployment.success === true;
@@ -94,13 +144,11 @@ async function main() {
     notify(`${path.basename(source)} — ${clock(result.seconds)}`, true);
     return 0;
   }
-  if (result.stderr.trim()) console.error(result.stderr.trim());
   if (deployment.id && deployment.done === false) {
     console.error(`Deployment still pending after ${clock(result.seconds)}.\nCheck: sf project deploy report --job-id ${deployment.id}`);
     notify('Deployment pending. See the task terminal for its job ID.', false);
   } else {
-    console.error(JSON.stringify(data, null, 2));
-    console.error(`Deployment failed after ${clock(result.seconds)}. See details above.`);
+    for (const error of deploymentErrors(data, path.relative(root, source))) console.error(error);
     notify(`Failed: ${path.basename(source)}. See the task terminal.`, false);
   }
   return result.status || 1;
